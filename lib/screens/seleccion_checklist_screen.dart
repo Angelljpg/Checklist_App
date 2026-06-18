@@ -2,30 +2,29 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'items_checklist_screen.dart';
-import 'pdf_services.dart';
 
 class SeleccionChecklistScreen extends StatefulWidget {
   final String viajeId;
   final String nombreViaje;
-  final bool esZarpe;
+  final String tipoFase;
+  final bool esCapitan;
 
-  const SeleccionChecklistScreen({
-    super.key,
-    required this.viajeId,
-    required this.nombreViaje,
-    required this.esZarpe,
-  });
+  const SeleccionChecklistScreen(
+      {super.key,
+      required this.viajeId,
+      required this.nombreViaje,
+      required this.tipoFase,
+      required this.esCapitan});
 
   @override
-  State<SeleccionChecklistScreen> createState() => _SeleccionChecklistScreenState();
+  State<SeleccionChecklistScreen> createState() =>
+      _SeleccionChecklistScreenState();
 }
 
 class _SeleccionChecklistScreenState extends State<SeleccionChecklistScreen> {
   final supabase = Supabase.instance.client;
-
   bool _cargando = true;
   Map<String, List<Map<String, dynamic>>> _categoriasPorMacroArea = {};
-
   List<Offset?> _puntosFirma = [];
   final _responsableController = TextEditingController();
   final _cosasFaltantesController = TextEditingController();
@@ -38,70 +37,116 @@ class _SeleccionChecklistScreenState extends State<SeleccionChecklistScreen> {
 
   Future<void> _cargarCategorias() async {
     try {
-      final data = await supabase
-          .from('checklist_categorias')
-          .select('*')
-          .order('macro_area')
-          .order('nombre');
-
+      final data = await supabase.from('checklist_categorias').select('*');
       final Map<String, List<Map<String, dynamic>>> agrupado = {};
+
       for (var row in data) {
-        final macro = row['macro_area'] ?? 'OTROS';
+        final String macroLimpio =
+            (row['macro_area']?.toString() ?? 'OTROS').trim().toUpperCase();
 
-        if (widget.esZarpe && macro != 'ANTES DE PARTIR') continue;
-        if (!widget.esZarpe && macro == 'ANTES DE PARTIR') continue;
+        if (widget.tipoFase == 'ZARPE' &&
+            !macroLimpio.contains('ANTES DE PARTIR')) continue;
+        if (widget.tipoFase == 'DURANTE' && !macroLimpio.contains('DURANTE'))
+          continue;
+        if (widget.tipoFase == 'CIERRE' &&
+            !macroLimpio.contains('CIERRE DE VIAJE')) continue;
+        if (widget.tipoFase == 'INVENTARIO') {
+          if (macroLimpio.contains('ANTES DE PARTIR') ||
+              macroLimpio.contains('DURANTE') ||
+              macroLimpio.contains('CIERRE DE VIAJE')) continue;
+        }
 
-        if (!agrupado.containsKey(macro)) agrupado[macro] = [];
-        agrupado[macro]!.add(row);
+        final macroOriginal = row['macro_area'] ?? 'OTROS';
+        if (!agrupado.containsKey(macroOriginal)) agrupado[macroOriginal] = [];
+        agrupado[macroOriginal]!.add(row);
       }
 
-      if (mounted) {
+      if (mounted)
         setState(() {
           _categoriasPorMacroArea = agrupado;
           _cargando = false;
         });
-      }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error al cargar categorías: $e')));
-        setState(() => _cargando = false);
-      }
+      if (mounted) setState(() => _cargando = false);
     }
+  }
+
+  // BOTÓN DE LOGÍSTICA (REFACTURADO PARA QUE SEA GRANDE Y LIMPIO)
+  void _mostrarLogistica() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Logística del Viaje', style: TextStyle(fontWeight: FontWeight.bold)),
+        content: FutureBuilder<Map<String, dynamic>>(
+          // Asegúrate de que los campos coincidan exactamente con tu tabla de Supabase
+          future: supabase.from('viajes').select('menu_especiales, preferencias_bebidas, preferencias_especiales').eq('id', widget.viajeId).single(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const SizedBox(height: 100, child: Center(child: CircularProgressIndicator()));
+            }
+            if (snapshot.hasError) {
+              return const Text('Error al cargar la logística.');
+            }
+            if (!snapshot.hasData) {
+              return const Text('Sin información disponible.');
+            }
+            
+            final data = snapshot.data!;
+            return SingleChildScrollView(
+              child: ListBody(
+                children: [
+                  const Text('🍸 Preferencias Bar:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text(data['preferencias_bebidas'] ?? 'N/A'),
+                  const SizedBox(height: 15),
+                  const Text('🎵 Música:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text(data['preferencias_especiales'] ?? 'N/A'),
+                  const SizedBox(height: 15),
+                  const Text('📋 Bitácora Alimentos:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text(data['menu_especiales'] ?? 'N/A'),
+                ],
+              ),
+            );
+          },
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cerrar'))
+        ],
+      ),
+    );
   }
 
   Future<void> _generarReporteMaestro() async {
     showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (c) => const Center(child: CircularProgressIndicator()),
-    );
+        context: context,
+        barrierDismissible: false,
+        builder: (c) => const Center(child: CircularProgressIndicator()));
 
     try {
-      // 2) Fase actual (se guarda por ItemsChecklistScreen al marcar)
-      final String faseActual = widget.esZarpe ? 'ZARPE' : 'INVENTARIO';
-
-      // 3) Traemos solo las respuestas de este viaje y de la fase actual
       final todasRespuestas = await supabase
           .from('checklist_respuestas')
           .select('item_id, completado')
           .eq('viaje_id', widget.viajeId)
-          .eq('fase', faseActual);
-
-      final mapRespuestas = { for (var r in todasRespuestas) r['item_id'].toString(): r['completado'] == true };
+          .eq('fase', widget.tipoFase);
+      final mapRespuestas = {
+        for (var r in todasRespuestas)
+          r['item_id'].toString(): r['completado'] == true
+      };
 
       List<String> listaFaltantesAutomaticos = [];
       int totalExistentes = 0;
 
-      // 4) Iteramos solo por las categorías visibles y sus ítems
       for (var macro in _categoriasPorMacroArea.values) {
         for (var cat in macro) {
-          final items = await supabase.from('checklist_items').select('*').eq('categoria_id', cat['id']);
+          final items = await supabase
+              .from('checklist_items')
+              .select('*')
+              .eq('categoria_id', cat['id']);
           for (var item in items) {
-            final itemId = item['id'].toString();
-            if (mapRespuestas[itemId] == true) {
+            if (mapRespuestas[item['id'].toString()] == true) {
               totalExistentes++;
             } else {
-              listaFaltantesAutomaticos.add('• [${cat['nombre']}] - ${item['nombre']}');
+              listaFaltantesAutomaticos
+                  .add('• [${cat['nombre']}] - ${item['nombre']}');
             }
           }
         }
@@ -111,255 +156,200 @@ class _SeleccionChecklistScreenState extends State<SeleccionChecklistScreen> {
       _mostrarPanelFirmaMaestra(totalExistentes, listaFaltantesAutomaticos);
     } catch (e) {
       Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }
 
-  void _mostrarPanelFirmaMaestra(int totalExistentes, List<String> listaFaltantesAutomaticos) {
+  void _mostrarPanelFirmaMaestra(
+      int totalExistentes, List<String> listaFaltantesAutomaticos) {
+    // Limpiar campos de una sesión anterior
+    _puntosFirma.clear();
+    _responsableController.clear();
+    _cosasFaltantesController.clear();
+
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
-      isScrollControlled: true,
-      enableDrag: false,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(25))),
+      isScrollControlled: true, // ¡Muy importante para que no se corte!
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                top: 25,
-                left: 30,
-                right: 30,
-                bottom: MediaQuery.of(context).viewInsets.bottom + 25,
-              ),
-              child: SizedBox(
-                height: MediaQuery.of(context).size.height * 0.85,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
+            return Container(
+              // Definimos una altura fija o porcentual clara
+              height: MediaQuery.of(context).size.height * 0.9,
+              padding: const EdgeInsets.all(25),
+              child: Column(
+                children: [
+                  // CABECERA DEL MODAL
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  widget.esZarpe ? 'AUTORIZACIÓN DE ZARPE' : 'REPORTE MAESTRO DE CIERRE',
-                                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF0C2E6C)),
-                                ),
-                                Text('Viaje: ${widget.nombreViaje}', style: const TextStyle(fontSize: 15, color: Colors.grey)),
-                              ],
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.close, size: 30),
-                            onPressed: () => Navigator.pop(context),
-                          ),
-                        ],
-                      ),
-                      const Divider(height: 20),
-
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(color: Colors.green.shade50, border: Border.all(color: Colors.green), borderRadius: BorderRadius.circular(10)),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(Icons.verified, color: Colors.green, size: 28),
-                                  const SizedBox(height: 6),
-                                  Text('ITEMS OK: $totalExistentes', style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 15),
-                          Expanded(
-                            child: Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(color: Colors.red.shade50, border: Border.all(color: Colors.red), borderRadius: BorderRadius.circular(10)),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(Icons.assignment_late, color: Colors.red, size: 28),
-                                  const SizedBox(height: 6),
-                                  Text('FALTAN: ${listaFaltantesAutomaticos.length}', style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      const SizedBox(height: 25),
-
-                      if (!widget.esZarpe) ...[
-                        const Text('Lista de cosas que faltan (Abastecimiento):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFFE65100))),
-                        const SizedBox(height: 10),
-                        TextField(
-                          controller: _cosasFaltantesController,
-                          maxLines: 4,
-                          keyboardType: TextInputType.multiline,
-                          decoration: InputDecoration(
-                            hintText: 'Anota aquí todo lo que haga falta comprar para el viaje...',
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                            filled: true,
-                            fillColor: Colors.orange.shade50,
-                            prefixIcon: const Padding(padding: EdgeInsets.only(bottom: 60), child: Icon(Icons.shopping_cart, color: Color(0xFFE65100))),
-                          ),
-                        ),
-                      ],
-
-                      const SizedBox(height: 25),
-                      const Text('VALIDACIÓN DE FIRMA', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF0C2E6C))),
-                      const SizedBox(height: 10),
-                      TextField(
-                        controller: _responsableController,
-                        decoration: InputDecoration(
-                          labelText: widget.esZarpe ? 'Nombre del Capitán (Autoriza Zarpe)' : 'Nombre de quien Entrega/Revisa',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                          prefixIcon: const Icon(Icons.person_pin_rounded),
-                        ),
-                      ),
-
-                      const SizedBox(height: 15),
-                      const Text('Firma Digital Autógrafa:', style: TextStyle(fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 10),
-
-                      Container(
-                        height: 180,
-                        width: double.infinity,
-                        decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.grey.shade400)),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: Listener(
-                            onPointerDown: (event) => setModalState(() => _puntosFirma.add(event.localPosition)),
-                            onPointerMove: (event) => setModalState(() => _puntosFirma.add(event.localPosition)),
-                            onPointerUp: (event) => setModalState(() => _puntosFirma.add(null)),
-                            child: GestureDetector(
-                              onVerticalDragUpdate: (_) {},
-                              onHorizontalDragUpdate: (_) {},
-                              behavior: HitTestBehavior.opaque,
-                              child: CustomPaint(painter: SignaturePainter(points: _puntosFirma), size: Size.infinite),
-                            ),
-                          ),
-                        ),
-                      ),
-
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          TextButton.icon(
-                            onPressed: () => setModalState(() => _puntosFirma.clear()),
-                            icon: const Icon(Icons.clear, color: Colors.red),
-                            label: const Text('Limpiar Lienzo', style: TextStyle(color: Colors.red)),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: widget.esZarpe ? Colors.blue.shade900 : const Color(0xFF0C2E6C),
-                            padding: const EdgeInsets.symmetric(vertical: 18),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                          onPressed: () async {
-                            if (_responsableController.text.trim().isEmpty || _puntosFirma.isEmpty) {
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El nombre y la firma son obligatorios.')));
-                              return;
-                            }
-
-                            try {
-                              final puntosJson = jsonEncode(_puntosFirma.map((p) => p == null ? null : {'dx': p.dx, 'dy': p.dy}).toList());
-
-                              String reporteTxt = "TOTAL ÍTEMS VERIFICADOS EN BUEN ESTADO: $totalExistentes\n\nFALTANTES DETECTADOS:\n";
-                              reporteTxt += listaFaltantesAutomaticos.isNotEmpty ? listaFaltantesAutomaticos.join('\n') : '• Todo verificado correctamente.';
-
-                              if (!widget.esZarpe && _cosasFaltantesController.text.trim().isNotEmpty) {
-                                reporteTxt += "\n\n========================================\nCOSAS QUE FALTAN (Anotadas manualmente):\n========================================\n";
-                                reporteTxt += _cosasFaltantesController.text.trim();
-                              }
-
-                              // 1. ACTUALIZA SUPABASE Y AVANZA EL PIPELINE
-                              if (widget.esZarpe) {
-                                await supabase.from('viajes').update({
-                                  'estado': 'EN VIAJE', 
-                                  'nombre_capitan_cierre': _responsableController.text.trim(),
-                                }).eq('id', widget.viajeId);
-                              } else {
-                                await supabase.from('viajes').update({
-                                  'estado': 'POR_ZARPAR', // <--- CAMBIA DE PESTAÑA AUTOMÁTICAMENTE
-                                  'nombre_capitan_cierre': _responsableController.text.trim(),
-                                  'firma_cierre_puntos': puntosJson,
-                                  'reporte_entregable': reporteTxt,
-                                  'fecha_cierre': DateTime.now().toIso8601String(),
-                                }).eq('id', widget.viajeId);
-                              }
-
-                              // 2. GENERA EL PDF EN AMBOS CASOS (Se activa el Popup de Compartir nativo)
-                              if (mounted) {
-                                String sufijo = widget.esZarpe ? "ZARPE" : "INVENTARIO";
-                                await generarReportePDF(
-                                  context,
-                                  "${widget.nombreViaje} - $sufijo",
-                                  totalExistentes,
-                                  listaFaltantesAutomaticos, // Ahora sí se envían bien al PDF
-                                  puntosJson,
-                                );
-                              }
-
-                              // 3. CIERRA PANTALLAS UNA SOLA VEZ
-                              if (mounted) {
-                                Navigator.pop(context); // Cierra el Modal
-                                Navigator.pop(context); // Cierra la pantalla de la lista
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      widget.esZarpe ? '¡ZARPE AUTORIZADO! Viaje en curso.' : '¡INVENTARIO CERRADO! Listo para Zarpar.',
-                                    ),
-                                    backgroundColor: Colors.green,
-                                  ),
-                                );
-                              }
-                            } catch (e) {
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error al procesar: $e')));
-                              }
-                            }
-                          },
-                          child: Text(
-                            widget.esZarpe ? 'FIRMAR Y AUTORIZAR ZARPE' : 'SELLAR YATE Y FINALIZAR REPORTE',
-                            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
+                      const Text("REPORTE MAESTRO", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                      IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
                     ],
                   ),
-                ),
+                  const Divider(),
+                  
+                  // CONTENIDO CON SCROLL
+                  Expanded(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (listaFaltantesAutomaticos.isNotEmpty) ...[
+                            Text("Pendientes (${listaFaltantesAutomaticos.length}):", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red.shade700)),
+                            const SizedBox(height: 5),
+                            Container(
+                              height: 100,
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red.shade100)),
+                              child: Scrollbar(child: ListView(children: listaFaltantesAutomaticos.map((e) => Text(e, style: const TextStyle(color: Colors.black87))).toList())),
+                            ),
+                            const SizedBox(height: 20),
+                          ],
+                          const Text("Firma de autorización:", style: TextStyle(fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 10),
+                          
+                          // ÁREA DE FIRMA CORRECTA Y DELIMITADA
+                          Container(
+                            height: 180,
+                            width: double.infinity,
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.grey.shade400, width: 2),
+                            ),
+                            child: ClipRRect( // <--- LA TIJERA QUE CORTA LO QUE SE SALE
+                              borderRadius: BorderRadius.circular(10),
+                              child: Builder(
+                                builder: (BuildContext context) {
+                                  return GestureDetector(
+                                    onPanStart: (details) {
+                                      setModalState(() {
+                                        final RenderBox renderBox = context.findRenderObject() as RenderBox;
+                                        _puntosFirma.add(renderBox.globalToLocal(details.globalPosition));
+                                      });
+                                    },
+                                    onPanUpdate: (details) {
+                                      setModalState(() {
+                                        final RenderBox renderBox = context.findRenderObject() as RenderBox;
+                                        _puntosFirma.add(renderBox.globalToLocal(details.globalPosition));
+                                      });
+                                    },
+                                    onPanEnd: (details) => setModalState(() => _puntosFirma.add(null)),
+                                    child: Container(
+                                      color: Colors.transparent, // <--- DETECTA EL TOQUE EN EL FONDO BLANCO
+                                      child: CustomPaint(
+                                        painter: SignaturePainter(points: _puntosFirma),
+                                        size: Size.infinite,
+                                      ),
+                                    ),
+                                  );
+                                }
+                              ),
+                            ),
+                          ),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              TextButton.icon(
+                                onPressed: () => setModalState(() => _puntosFirma.clear()),
+                                icon: const Icon(Icons.clear, color: Colors.red),
+                                label: const Text('Limpiar firma', style: TextStyle(color: Colors.red)),
+                              ),
+                            ],
+                          ),
+                          
+                          const SizedBox(height: 10),
+                          TextField(controller: _responsableController, decoration: const InputDecoration(labelText: "Nombre del Capitán", border: OutlineInputBorder())),
+                          const SizedBox(height: 20),
+                          TextField(controller: _cosasFaltantesController, decoration: const InputDecoration(labelText: "Comentarios u observaciones adicionales", border: OutlineInputBorder()), maxLines: 3),
+                          const SizedBox(height: 20),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // BOTÓN FIJO AL FINAL
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.primary, padding: const EdgeInsets.symmetric(vertical: 20)),
+                      onPressed: () async {
+                        if (_puntosFirma.where((p) => p != null).length < 5 ||
+                            _responsableController.text.trim().isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('La firma y el nombre del capitán son obligatorios.')));
+                          return;
+                        }
+
+                        showDialog(context: context, barrierDismissible: false, builder: (c) => const Center(child: CircularProgressIndicator()));
+
+                        try {
+                          // 1. Convertimos el trazo de la firma a texto JSON
+                          final firmaJson = jsonEncode(_puntosFirma.map((p) => p == null ? null : {'dx': p.dx, 'dy': p.dy}).toList());
+
+                          // 2. GUARDAMOS DIRECTO EN LA NUEVA TABLA (Súper rápido, sin PDFs)
+                          await supabase.from('reportes_finales').insert({
+                            'viaje_id': widget.viajeId,
+                            'capitan_nombre': _responsableController.text.trim(),
+                            'observaciones':
+                                _cosasFaltantesController.text.trim(),
+                            'faltantes_lista': listaFaltantesAutomaticos.join(
+                                '\n'), // La lista de errores en texto
+                            'firma_datos': firmaJson,
+                            'fase': widget.tipoFase,
+                          });
+
+                          // 3. Actualizamos el estado del viaje
+                          String nuevoEstado = '';
+                          if (widget.tipoFase == 'INVENTARIO') nuevoEstado = 'POR_ZARPAR';
+                          if (widget.tipoFase == 'ZARPE') nuevoEstado = 'EN_NAVEGACION';
+                          if (widget.tipoFase == 'DURANTE') nuevoEstado = 'POR_CERRAR'; // <-- ¡AQUÍ ESTÁ LA MAGIA QUE FALTABA!
+                          if (widget.tipoFase == 'CIERRE') nuevoEstado = 'FINALIZADO';
+
+                          final updateData = <String, dynamic>{};
+                          if (nuevoEstado.isNotEmpty) {
+                            updateData['estado'] = nuevoEstado;
+                          }
+
+                          // Solo marcamos el viaje como cerrado oficialmente si es la última fase
+                          if (widget.tipoFase == 'CIERRE') {
+                            updateData['nombre_capitan_cierre'] = _responsableController.text.trim();
+                            updateData['fecha_cierre'] = DateTime.now().toIso8601String();
+                          }
+
+                          if (updateData.isNotEmpty) {
+                            await supabase.from('viajes').update(updateData).eq('id', widget.viajeId);
+                          }
+
+                          Navigator.of(context).pop(); // Cierra el loading
+                          Navigator.of(context).pop(); // Cierra el modal
+                          Navigator.of(context).pop(); // Cierra la pantalla de checklist
+
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('¡Reporte guardado exitosamente en la base de datos!'), backgroundColor: Colors.green));
+                        } catch (e) {
+                          Navigator.of(context).pop(); // Cierra el loading
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error al guardar el reporte: $e'), backgroundColor: Colors.red));
+                        }
+                      },
+                      child: const Text("FINALIZAR Y FIRMAR", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ],
               ),
             );
           },
         );
       },
-    ).then((_) => _puntosFirma.clear());
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_cargando) {
+    if (_cargando)
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
     final macroAreas = _categoriasPorMacroArea.keys.toList()..sort();
+
+    final Color primaryColor = Theme.of(context).colorScheme.primary;
 
     return DefaultTabController(
       length: macroAreas.isEmpty ? 1 : macroAreas.length,
@@ -367,19 +357,35 @@ class _SeleccionChecklistScreenState extends State<SeleccionChecklistScreen> {
         backgroundColor: const Color(0xFFF4F7FF),
         appBar: AppBar(
           title: Text(widget.nombreViaje, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-          backgroundColor: widget.esZarpe ? Colors.blue.shade900 : const Color(0xFF0C2E6C),
+          backgroundColor: primaryColor,
           iconTheme: const IconThemeData(color: Colors.white),
+          actions: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.white.withOpacity(0.2),
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                icon: const Icon(Icons.info_outline, size: 18),
+                label: const Text('LOGÍSTICA', style: TextStyle(fontWeight: FontWeight.bold)),
+                onPressed: _mostrarLogistica,
+              ),
+            ),
+          ],
           bottom: TabBar(
-            isScrollable: true,
-            labelColor: Colors.white,
+            isScrollable: true, 
+            labelColor: Colors.white, 
             unselectedLabelColor: Colors.white60,
-            indicatorColor: Colors.amber,
+            indicatorColor: Theme.of(context).colorScheme.secondary,
             indicatorWeight: 4,
-            tabs: macroAreas.isEmpty ? [const Tab(text: 'Vacío')] : macroAreas.map((m) => Tab(text: m)).toList(),
+            tabs: macroAreas.isEmpty ? [const Tab(text: 'Vacío')] : macroAreas.map((m) => Tab(text: m)).toList()
           ),
         ),
         body: macroAreas.isEmpty
-            ? const Center(child: Text('No hay categorías en esta sección', style: TextStyle(fontSize: 18, color: Colors.grey)))
+            ? const Center(child: Text('No hay categorías', style: TextStyle(color: Colors.grey)))
             : TabBarView(
                 children: macroAreas.map((macro) {
                   final categorias = _categoriasPorMacroArea[macro]!;
@@ -391,41 +397,40 @@ class _SeleccionChecklistScreenState extends State<SeleccionChecklistScreen> {
                       return Card(
                         elevation: 2,
                         margin: const EdgeInsets.only(bottom: 15),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(15),
+                          side: BorderSide(color: primaryColor.withOpacity(0.3), width: 1.5)
+                        ),
                         child: ListTile(
                           contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
                           title: Text(cat['nombre'], style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                          trailing: Icon(Icons.arrow_forward_ios, color: widget.esZarpe ? Colors.blue.shade900 : const Color(0xFF0C2E6C)),
-                          onTap: () {
-                            Navigator.push(
+                          trailing: Icon(Icons.arrow_forward_ios, color: primaryColor),
+                          onTap: () => Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (context) => ItemsChecklistScreen(
-                                  categoriaId: cat['id'].toString(),
-                                  categoriaNombre: cat['nombre'],
-                                  viajeId: widget.viajeId,
-                                  esZarpe: widget.esZarpe,
-                                ),
-                              ),
-                            );
-                          },
+                                  builder: (context) => ItemsChecklistScreen(
+                                      categoriaId: cat['id'].toString(),
+                                      categoriaNombre: cat['nombre'],
+                                      viajeId: widget.viajeId,
+                                      tipoFase: widget.tipoFase))).then((_) => _cargarCategorias()), // <-- Recargamos al volver
                         ),
                       );
                     },
                   );
                 }).toList(),
               ),
-        floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-        floatingActionButton: macroAreas.isEmpty
-            ? null
+        // BOTÓN SIEMPRE VISIBLE PARA EL CAPITÁN
+        floatingActionButton: !widget.esCapitan 
+            ? null 
             : FloatingActionButton.extended(
-                onPressed: _generarReporteMaestro,
-                backgroundColor: widget.esZarpe ? Colors.blue.shade900 : Colors.green.shade700,
-                icon: Icon(widget.esZarpe ? Icons.sailing : Icons.verified_user, color: Colors.white),
-                label: Text(
-                  widget.esZarpe ? 'AUTORIZAR ZARPE' : 'CERRAR Y FIRMAR YATE',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
-                ),
+                onPressed: () {
+                    // Quitamos la validación "todoListo" aquí para que SIEMPRE deje firmar
+                    // Si quieres que avise si faltan cosas, podemos poner un if interno
+                    _generarReporteMaestro();
+                },
+                backgroundColor: Theme.of(context).colorScheme.secondary,
+                icon: const Icon(Icons.edit, color: Colors.white),
+                label: const Text('FIRMAR Y FINALIZAR', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               ),
       ),
     );
@@ -435,7 +440,6 @@ class _SeleccionChecklistScreenState extends State<SeleccionChecklistScreen> {
 class SignaturePainter extends CustomPainter {
   final List<Offset?> points;
   SignaturePainter({required this.points});
-
   @override
   void paint(Canvas canvas, Size size) {
     Paint paint = Paint()
@@ -443,12 +447,12 @@ class SignaturePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..strokeWidth = 4.0;
     for (int i = 0; i < points.length - 1; i++) {
-      if (points[i] != null && points[i + 1] != null) {
+      if (points[i] != null && points[i + 1] != null)
         canvas.drawLine(points[i]!, points[i + 1]!, paint);
-      }
     }
   }
 
   @override
-  bool shouldRepaint(SignaturePainter oldDelegate) => oldDelegate.points != points;
+  bool shouldRepaint(SignaturePainter oldDelegate) =>
+      oldDelegate.points != points;
 }

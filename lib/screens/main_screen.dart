@@ -1,10 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+
 import 'nuevo_viaje_screen.dart';
-import 'seleccion_checklist_screen.dart'; 
+import 'seleccion_checklist_screen.dart';
+import 'reporte_semanal_screen.dart';
+import 'resumen_viaje_finalizado_screen.dart';
+import 'login_selector_screen.dart';
+import 'ver_reporte_screen.dart'; // <-- IMPORTAMOS LA NUEVA PANTALLA
 
 class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
+  final bool esCapitan;
+  const MainScreen({super.key, required this.esCapitan});
 
   @override
   State<MainScreen> createState() => _MainScreenState();
@@ -13,37 +20,82 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
   final supabase = Supabase.instance.client;
+  RealtimeChannel? _viajesSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedIndex = widget.esCapitan ? 0 : 2; 
+    _configurarNotificacionesReales();
+    _inicializarPushNotifications(); 
+  }
+
+  void _configurarNotificacionesReales() {
+    _viajesSubscription = supabase.channel('public:viajes').onPostgresChanges(
+          event: PostgresChangeEvent.insert, schema: 'public', table: 'viajes',
+          callback: (payload) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('¡Nuevo viaje programado en el sistema!'), 
+                  backgroundColor: Colors.orange, 
+                  duration: Duration(seconds: 5)
+                )
+              );
+              setState(() {});
+            }
+          },
+        ).subscribe();
+  }
+
+  Future<void> _inicializarPushNotifications() async {
+    final fcmToken = await FirebaseMessaging.instance.getToken();
+    if (fcmToken != null) {
+      try {
+        await supabase.from('usuarios_tokens').upsert({
+          'token': fcmToken,
+          'rol': widget.esCapitan ? 'capitan' : 'Propietario',
+          'updated_at': DateTime.now().toIso8601String(),
+        }, onConflict: 'token');
+      } catch (e) {
+        debugPrint("Error al guardar token de notificación: $e");
+      }
+    }
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      if (message.notification != null) {
+        debugPrint('Notificación: ${message.notification?.title}');
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    if (_viajesSubscription != null) supabase.removeChannel(_viajesSubscription!);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFF0A2440), Color(0xFF0D6480)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-          ),
-        ),
+        decoration: const BoxDecoration(gradient: LinearGradient(colors: [Color(0xFF0A2440), Color(0xFF0D6480)], begin: Alignment.topCenter, end: Alignment.bottomCenter)),
         child: Row(
           children: [
             _construirSidebarMenu(),
-            Expanded(
-              child: _construirListaViajes(esZarpe: _selectedIndex == 1),
-            ),
+            Expanded(child: _construirListaViajes(
+              tipoFase: _selectedIndex == 0 ? 'INVENTARIO' : _selectedIndex == 1 ? 'ZARPE' : _selectedIndex == 2 ? 'DURANTE' : _selectedIndex == 3 ? 'CIERRE' : _selectedIndex == 4 ? 'HISTORIAL' : 'DOCUMENTOS'
+            )),
           ],
         ),
       ),
-      floatingActionButton: _selectedIndex == 0
+      floatingActionButton: ((widget.esCapitan && _selectedIndex == 0) || (!widget.esCapitan && _selectedIndex == 2)) 
           ? FloatingActionButton.extended(
               onPressed: () {
-                Navigator.push(context, MaterialPageRoute(builder: (context) => const NuevoViajeScreen()))
-                    .then((_) => setState(() {}));
+                Navigator.push(context, MaterialPageRoute(builder: (context) => const NuevoViajeScreen())).then((_) => setState(() {}));
               },
-              backgroundColor: const Color(0xFF0077B6), 
-              elevation: 8,
+              backgroundColor: Theme.of(context).colorScheme.primary, elevation: 8,
               icon: const Icon(Icons.add_circle_outline, size: 28, color: Colors.white),
-              label: const Text('NUEVO VIAJE', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 1.2)),
+              label: const Text('REGISTRAR VIAJE', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 1.2)),
             )
           : null,
     );
@@ -51,44 +103,85 @@ class _MainScreenState extends State<MainScreen> {
 
   Widget _construirSidebarMenu() {
     return SizedBox(
-      width: 260, 
+      width: 270,
+      height: double.infinity,
       child: Column(
         children: [
-          const SizedBox(height: 50),
+          const SizedBox(height: 30),
           Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFF00E5FF).withOpacity(0.4), 
-                  blurRadius: 25, 
-                  spreadRadius: 2
-                )
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(shape: BoxShape.circle, boxShadow: [BoxShadow(color: const Color(0xFF00E5FF).withOpacity(0.4), blurRadius: 20, spreadRadius: 1)]),
+            child: const Icon(Icons.diamond, size: 45, color: Color(0xFF00E5FF)),
+          ),
+          const SizedBox(height: 8),
+          const Text('DIAMOND', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: 4)),
+          const SizedBox(height: 15),
+          Container(height: 1, width: 180, color: Colors.white24),
+          const SizedBox(height: 15),
+          
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 20),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(12)),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(widget.esCapitan ? Icons.gavel : Icons.engineering, color: widget.esCapitan ? const Color(0xFF00E5FF) : Colors.orange, size: 20),
+                const SizedBox(width: 8),
+                Text(widget.esCapitan ? 'CAPITÁN' : 'PROPIETARIO', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
               ],
             ),
-            child: const Icon(Icons.diamond, size: 60, color: Color(0xFF00E5FF)), 
           ),
           const SizedBox(height: 15),
-          const Text('DIAMOND', style: TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold, letterSpacing: 4)),
-          const SizedBox(height: 5),
-          
-          const SizedBox(height: 40),
-          Container(height: 1, width: 180, color: Colors.white24),
-          const SizedBox(height: 30),
-
-          _buildBotonMenu(
-            icon: Icons.anchor,
-            selectedIcon: Icons.anchor_outlined,
-            label: 'Inventario',
-            index: 0,
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.zero,
+              children: [
+                if (widget.esCapitan) ...[
+                  _buildBotonMenu(icon: Icons.anchor, selectedIcon: Icons.anchor_outlined, label: 'Inventario / Alta', index: 0),
+                  const SizedBox(height: 8),
+                  _buildBotonMenu(icon: Icons.sailing_outlined, selectedIcon: Icons.sailing, label: 'Por Zarpar', index: 1),
+                  const SizedBox(height: 8),
+                ],
+                _buildBotonMenu(icon: Icons.directions_boat_outlined, selectedIcon: Icons.directions_boat, label: 'Revisión en Viaje', index: 2),
+                const SizedBox(height: 8),
+                _buildBotonMenu(icon: Icons.assignment_outlined, selectedIcon: Icons.assignment, label: 'Reportes Firmados', index: 5),
+                const SizedBox(height: 8),
+                if (widget.esCapitan) ...[
+                  _buildBotonMenu(icon: Icons.task_alt, selectedIcon: Icons.done_all, label: 'Cierre de Viaje', index: 3),
+                  const SizedBox(height: 8),
+                  _buildBotonMenu(icon: Icons.history, selectedIcon: Icons.history_toggle_off, label: 'Historial', index: 4),
+                  const SizedBox(height: 20),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: InkWell(
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const ReporteSemanalScreen())),
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20), decoration: BoxDecoration(color: Colors.orange.withOpacity(0.15), borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.orange.withOpacity(0.6), width: 1.5)), child: Row(children: const [Icon(Icons.assignment_turned_in, color: Colors.orange, size: 24), SizedBox(width: 15), Expanded(child: Text('Reporte Semanal', style: TextStyle(color: Colors.orange, fontSize: 13, fontWeight: FontWeight.bold)))])),
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
-          const SizedBox(height: 15),
-          _buildBotonMenu(
-            icon: Icons.sailing_outlined,
-            selectedIcon: Icons.sailing,
-            label: 'Por Zarpar',
-            index: 1,
+          Container(
+            padding: const EdgeInsets.all(20),
+            child: InkWell(
+              onTap: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginSelectorScreen())),
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20),
+                decoration: BoxDecoration(color: Colors.red.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.red.withOpacity(0.5))),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: const [
+                    Icon(Icons.logout, color: Colors.redAccent, size: 20),
+                    SizedBox(width: 10),
+                    Text('SALIR', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold))
+                  ],
+                ),
+              ),
+            ),
           ),
         ],
       ),
@@ -97,62 +190,20 @@ class _MainScreenState extends State<MainScreen> {
 
   Widget _buildBotonMenu({required IconData icon, required IconData selectedIcon, required String label, required int index}) {
     final isSelected = _selectedIndex == index;
-    
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: () => setState(() => _selectedIndex = index),
-          borderRadius: BorderRadius.circular(16),
-          splashColor: const Color(0xFF00E5FF).withOpacity(0.3),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 300),
-            padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 20),
-            decoration: BoxDecoration(
-              color: isSelected ? const Color(0xFF00E5FF).withOpacity(0.15) : Colors.transparent,
-              borderRadius: BorderRadius.circular(16),
-              border: isSelected 
-                  ? Border.all(color: const Color(0xFF00E5FF).withOpacity(0.6), width: 1.5) 
-                  : Border.all(color: Colors.transparent, width: 1.5),
-            ),
-            child: Row(
-              children: [
-                Icon(isSelected ? selectedIcon : icon, color: isSelected ? const Color(0xFF00E5FF) : Colors.white60, size: 28),
-                const SizedBox(width: 18),
-                Expanded(
-                  child: Text(
-                    label,
-                    style: TextStyle(
-                      color: isSelected ? Colors.white : Colors.white60,
-                      fontSize: 16,
-                      fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                      letterSpacing: 0.5
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
+    return Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Material(color: Colors.transparent, child: InkWell(onTap: () => setState(() => _selectedIndex = index), borderRadius: BorderRadius.circular(16), child: AnimatedContainer(duration: const Duration(milliseconds: 300), padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20), decoration: BoxDecoration(color: isSelected ? const Color(0xFF00E5FF).withOpacity(0.15) : Colors.transparent, borderRadius: BorderRadius.circular(16), border: Border.all(color: isSelected ? const Color(0xFF00E5FF).withOpacity(0.6) : Colors.transparent, width: 1.5)), child: Row(children: [Icon(isSelected ? selectedIcon : icon, color: isSelected ? const Color(0xFF00E5FF) : Colors.white60, size: 24), const SizedBox(width: 15), Expanded(child: Text(label, style: TextStyle(color: isSelected ? Colors.white : Colors.white60, fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.w500)))])))));
   }
 
-  Widget _construirListaViajes({required bool esZarpe}) {
-    final colorFondoCaja = esZarpe ? const Color(0xFFFFF6ED) : const Color(0xFFF0F8FF); 
-    final colorBordeCaja = esZarpe ? const Color(0xFFFFDAB9) : const Color(0xFFBBE4FF);
-    final colorIconoFondo = esZarpe ? const Color(0xFFFF8364) : const Color(0xFF0077B6); 
-    final colorIcono = Colors.white;
-
+  Widget _construirListaViajes({required String tipoFase}) {
+    final Color primary = Theme.of(context).colorScheme.primary;
+    final Color secondary = Theme.of(context).colorScheme.secondary;
+    
     return Container(
-      margin: const EdgeInsets.fromLTRB(10, 24, 24, 24),
-      padding: const EdgeInsets.all(30),
+      margin: const EdgeInsets.all(20), 
+      padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: Colors.white, 
-        borderRadius: BorderRadius.circular(35),
-        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 25, offset: Offset(0, 10))],
+        color: Colors.white.withOpacity(0.95), 
+        borderRadius: BorderRadius.circular(30), 
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 20, offset: const Offset(0, 10))]
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -160,133 +211,97 @@ class _MainScreenState extends State<MainScreen> {
           Row(
             children: [
               Container(
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(color: colorFondoCaja, shape: BoxShape.circle),
-                child: Icon(esZarpe ? Icons.sailing : Icons.diamond, size: 36, color: colorIconoFondo),
+                padding: const EdgeInsets.all(18), 
+                decoration: BoxDecoration(color: primary, shape: BoxShape.circle), 
+                child: Icon(tipoFase == 'DOCUMENTOS' ? Icons.assignment_turned_in : Icons.directions_boat, size: 32, color: Colors.white)
               ),
               const SizedBox(width: 20),
               Expanded(
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.start, 
                   children: [
                     Text(
-                      esZarpe ? 'Viajes Por Zarpar' : 'Inventario del Diamond',
-                      style: const TextStyle(fontSize: 34, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      esZarpe ? 'Revisión final: Juguetes acuáticos y hospitalidad' : 'Abastecimiento de despensa y revisión general',
-                      style: const TextStyle(fontSize: 16, color: Colors.black54),
-                    ),
-                  ],
-                ),
+                      tipoFase == 'DOCUMENTOS' ? 'Reportes Firmados' : 'Viajes: ${tipoFase.toUpperCase()}', 
+                      style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: primary, letterSpacing: 1)
+                    ), 
+                    const SizedBox(height: 4), 
+                    Text('Gestión operativa de la flota Diamond', style: TextStyle(fontSize: 14, color: Colors.grey.shade600))
+                  ]
+                )
               ),
             ],
           ),
-          const SizedBox(height: 35),
+          const SizedBox(height: 30),
           Expanded(
             child: FutureBuilder(
-              // EL FILTRO MÁGICO: Separa los viajes según su estado actual
-              future: supabase
-                  .from('viajes')
-                  .select()
-                  .eq('estado', esZarpe ? 'POR_ZARPAR' : 'PLANEADO')
-                  .order('fecha_inicio'),
+              future: tipoFase == 'DOCUMENTOS' 
+                  ? supabase.from('viajes').select().order('fecha_inicio', ascending: false)
+                  : supabase.from('viajes').select().eq('estado', tipoFase == 'ZARPE' ? 'POR_ZARPAR' : tipoFase == 'DURANTE' ? 'EN_NAVEGACION' : tipoFase == 'CIERRE' ? 'POR_CERRAR' : tipoFase == 'HISTORIAL' ? 'FINALIZADO' : 'PLANEADO').order('fecha_inicio'),
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator(color: Color(0xFF00E5FF)));
-                final viajes = snapshot.data as List<dynamic>? ?? [];
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return Center(child: CircularProgressIndicator(color: primary));
+                }
+                
+                final viajesBrutos = snapshot.data as List<dynamic>? ?? [];
+                final viajes = tipoFase == 'DOCUMENTOS'
+                    ? viajesBrutos.where((v) => 
+                        v['estado'] == 'POR_ZARPAR' || 
+                        v['estado'] == 'EN_NAVEGACION' || 
+                        v['estado'] == 'POR_CERRAR' || 
+                        v['estado'] == 'FINALIZADO'
+                      ).toList()
+                    : viajesBrutos;
 
                 if (viajes.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(esZarpe ? Icons.sailing_rounded : Icons.inventory_2_outlined, size: 80, color: Colors.grey.shade300),
-                        const SizedBox(height: 16),
-                        Text(
-                          esZarpe ? 'No hay viajes listos por zarpar.' : 'No hay inventarios pendientes.',
-                          style: const TextStyle(fontSize: 18, color: Colors.grey)
-                        ),
-                      ],
-                    ),
-                  );
+                  return Center(child: Text('Sin registros activos', style: TextStyle(color: Colors.grey.shade400)));
                 }
 
                 return ListView.separated(
-                  itemCount: viajes.length,
-                  separatorBuilder: (context, index) => const SizedBox(height: 20),
+                  itemCount: viajes.length, 
+                  separatorBuilder: (context, index) => const SizedBox(height: 12),
                   itemBuilder: (context, index) {
                     final viaje = viajes[index];
                     return InkWell(
                       onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => SeleccionChecklistScreen(
-                              viajeId: viaje['id'].toString(),
-                              nombreViaje: viaje['nombre_viaje'] ?? 'Detalles del Viaje',
-                              esZarpe: esZarpe, 
-                            ),
-                          ),
-                        ).then((_) => setState(() {})); // Se refresca la lista al volver
+                        if (tipoFase == 'DOCUMENTOS') {
+                          Navigator.push(context, MaterialPageRoute(builder: (context) => VerReporteScreen(viajeId: viaje['id'].toString())));
+                        } else if (tipoFase == 'HISTORIAL') {
+                          Navigator.push(context, MaterialPageRoute(builder: (context) => ResumenViajeFinalizadoScreen(viajeId: viaje['id'].toString(), nombreViaje: viaje['nombre_viaje'] ?? 'Viaje Concluido')));
+                        } else {
+                          Navigator.push(context, MaterialPageRoute(builder: (context) => SeleccionChecklistScreen(viajeId: viaje['id'].toString(), nombreViaje: viaje['nombre_viaje'] ?? 'Viaje', tipoFase: tipoFase, esCapitan: widget.esCapitan))).then((_) => setState(() {}));
+                        }
                       },
-                      borderRadius: BorderRadius.circular(22),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 300),
-                        padding: const EdgeInsets.all(24),
+                      child: Container(
+                        padding: const EdgeInsets.all(20),
                         decoration: BoxDecoration(
-                          color: colorFondoCaja,
-                          borderRadius: BorderRadius.circular(22),
-                          border: Border.all(color: colorBordeCaja, width: 2),
-                          boxShadow: [BoxShadow(color: colorBordeCaja.withOpacity(0.4), blurRadius: 15, offset: const Offset(0, 8))],
+                          color: Colors.white, 
+                          borderRadius: BorderRadius.circular(16), 
+                          border: Border.all(color: primary.withOpacity(0.3), width: 1.5)
                         ),
                         child: Row(
                           children: [
                             Container(
-                              padding: const EdgeInsets.all(16),
+                              padding: const EdgeInsets.all(12), 
                               decoration: BoxDecoration(
-                                color: colorIconoFondo,
-                                borderRadius: BorderRadius.circular(16),
-                                boxShadow: [BoxShadow(color: colorIconoFondo.withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 5))],
-                              ),
-                              child: Icon(esZarpe ? Icons.water : Icons.diamond, size: 36, color: colorIcono),
+                                color: primary.withOpacity(0.1), 
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: primary.withOpacity(0.3))
+                              ), 
+                              child: Icon(Icons.sailing, color: primary)
                             ),
-                            const SizedBox(width: 25),
+                            const SizedBox(width: 20),
                             Expanded(
                               child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                                crossAxisAlignment: CrossAxisAlignment.start, 
                                 children: [
-                                  Text(viaje['nombre_viaje'] ?? 'Viaje', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)), overflow: TextOverflow.ellipsis),
-                                  const SizedBox(height: 8),
-                                  Wrap(
-                                    spacing: 15,
-                                    runSpacing: 5,
-                                    children: [
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(Icons.location_on, size: 18, color: Colors.black54),
-                                          const SizedBox(width: 4),
-                                          Flexible(child: Text('${viaje['destino']}', style: const TextStyle(fontSize: 16, color: Colors.black54, fontWeight: FontWeight.w500), overflow: TextOverflow.ellipsis)),
-                                        ],
-                                      ),
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(Icons.groups, size: 18, color: Colors.black54),
-                                          const SizedBox(width: 4),
-                                          Text('${viaje['cantidad_pasajeros']} personas', style: const TextStyle(fontSize: 16, color: Colors.black54, fontWeight: FontWeight.w500)),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
+                                  Text(viaje['nombre_viaje'] ?? 'Viaje', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: primary)),
+                                  Text('Destino: ${viaje['destino']}', style: TextStyle(color: Colors.grey.shade600))
+                                ]
+                              )
                             ),
-                            Icon(Icons.arrow_forward_ios, color: colorIconoFondo),
-                          ],
-                        ),
+                            Icon(Icons.chevron_right, color: secondary, size: 30)
+                          ]
+                        )
                       ),
                     );
                   },

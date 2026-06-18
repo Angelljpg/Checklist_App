@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-// IMPORTAMOS LA PANTALLA PRINCIPAL
+// IMPORTAMOS LA PANTALLA PRINCIPAL Y EL LOGIN
 import 'screens/main_screen.dart'; 
+import 'screens/login_selector_screen.dart'; // <-- NUEVO IMPORT
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -43,34 +44,39 @@ class DiamondApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Operativo Diamond',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueGrey),
         useMaterial3: true,
+        // ESTA ES LA PALETA GLOBAL
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF0A2440), // Azul Marino
+          primary: const Color(0xFF0A2440),    // Color principal
+          secondary: const Color(0xFFF97316),  // Naranja Premium
+        ),
+        // ESTO HARÁ QUE TODOS LOS APPBAR SE VEAN IGUAL
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF0A2440),
+          foregroundColor: Colors.white,
+          elevation: 0,
+        ),
       ),
       
-      // =========================================================
-      // SOLUCIÓN TABLET: SAFE AREA CON BORDES NEGROS
-      // =========================================================
       builder: (context, child) {
         return Scaffold(
-          // El fondo negro se verá en los espacios que deje el SafeArea
           backgroundColor: Colors.black, 
           body: SafeArea(
-            // SafeArea evita físicamente que tu app se encime con los botones de abajo o la cámara de arriba
             bottom: true,
             top: true,
             left: true,
             right: true,
             child: ClipRRect(
-              // Le damos un borde ligeramente redondeado a la app para separarla de las barras negras
               borderRadius: BorderRadius.circular(12),
               child: child ?? const SizedBox.shrink(),
             ),
           ),
         );
       },
-      // =========================================================
 
-      home: const MainScreen(),
+      // ¡INICIAMOS EN EL SELECTOR DE ROL EN LUGAR DEL MAIN SCREEN!
+      home: const LoginSelectorScreen(),
     );
   }
 }
