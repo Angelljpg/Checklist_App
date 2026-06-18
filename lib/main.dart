@@ -9,6 +9,7 @@ import 'screens/login_selector_screen.dart'; // <-- NUEVO IMPORT
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Inicializa Supabase
   await Supabase.initialize(
     url: 'https://dhgryxgpsmmjfiqqijnu.supabase.co',
     anonKey: 'sb_publishable_j2Jj6SfzaHS-kUNCqN2TzQ_pdiBYfrT',

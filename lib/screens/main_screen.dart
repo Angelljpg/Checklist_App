@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 
 import 'nuevo_viaje_screen.dart';
 import 'seleccion_checklist_screen.dart';
@@ -27,7 +26,6 @@ class _MainScreenState extends State<MainScreen> {
     super.initState();
     _selectedIndex = widget.esCapitan ? 0 : 2; 
     _configurarNotificacionesReales();
-    _inicializarPushNotifications(); 
   }
 
   void _configurarNotificacionesReales() {
@@ -46,26 +44,6 @@ class _MainScreenState extends State<MainScreen> {
             }
           },
         ).subscribe();
-  }
-
-  Future<void> _inicializarPushNotifications() async {
-    final fcmToken = await FirebaseMessaging.instance.getToken();
-    if (fcmToken != null) {
-      try {
-        await supabase.from('usuarios_tokens').upsert({
-          'token': fcmToken,
-          'rol': widget.esCapitan ? 'capitan' : 'Propietario',
-          'updated_at': DateTime.now().toIso8601String(),
-        }, onConflict: 'token');
-      } catch (e) {
-        debugPrint("Error al guardar token de notificación: $e");
-      }
-    }
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      if (message.notification != null) {
-        debugPrint('Notificación: ${message.notification?.title}');
-      }
-    });
   }
 
   @override
